@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eboard HQ</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">★</span>
+      <h1>Eboard&nbsp;HQ</h1>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-view="members">Members</button>
+      <button class="tab" data-view="calendar">Calendar</button>
+      <button class="tab" data-view="personal">Personal</button>
+      <button class="tab" data-view="projects">Projects</button>
+    </nav>
+  </header>
+
+  <main id="app"></main>
+
+  <footer class="footer">
+    <span>All data is saved in this browser. <button id="exportBtn" class="link-btn">Export backup</button> · <button id="importBtn" class="link-btn">Import backup</button></span>
+    <input type="file" id="importFile" accept="application/json" hidden />
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

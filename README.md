@@ -1,13 +1,21 @@
 # Eboard HQ
 
-A simple, no-setup website for running an executive board. Everything is saved
-right in your browser — no accounts, no server, no install.
+A simple website for running an executive board — members, a monthly
+to-do/events calendar, personal ideas & goals, and projects with assigned tasks.
 
-## How to use it
+## 👉 First time? Read [SETUP.md](SETUP.md)
 
-**Just open `index.html` in any web browser.** That's it.
+It walks you (click-by-click) through two things:
+1. **Getting your site online** so you have a link to share.
+2. **Turning on live sharing** so everyone sees the same updates.
 
-To put it online for free so your whole board can reach it, see *Hosting* below.
+## How it works
+
+- Open the site link and start using it — changes save automatically.
+- Once live sharing is set up (SETUP.md), the whole board shares **one live
+  copy** that updates every few seconds. The status at the bottom shows
+  **“Live · shared with everyone.”**
+- It still works offline: changes save on your device and sync when you're back.
 
 ## What's inside
 
@@ -20,20 +28,12 @@ To put it online for free so your whole board can reach it, see *Hosting* below.
 
 ## Your data
 
-All information is stored locally in the browser you use (via `localStorage`),
-so it stays on your device. Use the **Export backup** link at the bottom to save
-a copy, and **Import backup** to restore it or move it to another computer.
+With live sharing on, everything lives in your free Supabase database and is
+shared across everyone. The **Export backup** button at the bottom saves a copy
+to a file anytime, and **Import backup** restores it.
 
-> Heads up: data is per-browser. If you want everyone editing the same shared
-> copy in real time, that needs a hosted database — let me know and I can build
-> that next.
+## Files
 
-## Hosting (free, optional)
-
-The site is just static files, so it works great on **GitHub Pages**:
-
-1. Push this repo to GitHub.
-2. Go to **Settings → Pages**.
-3. Under *Build and deployment*, set **Source: Deploy from a branch**, pick your
-   branch and the `/ (root)` folder, then **Save**.
-4. After a minute your site is live at `https://<username>.github.io/<repo>/`.
+- `index.html`, `styles.css`, `app.js` — the website itself.
+- `config.js` — where you paste your Supabase URL + key (see SETUP.md).
+- `.github/workflows/deploy.yml` — auto-publishes the site to GitHub Pages.

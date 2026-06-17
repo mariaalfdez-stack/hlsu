@@ -39,9 +39,129 @@ function load() {
 
 function save() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  schedulePush();
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* =========================================================
+   CLOUD SYNC (Supabase) — optional.
+   If config.js has credentials, all boards share one copy
+   and update live. If not, the app just saves locally.
+   ========================================================= */
+const ROW_ID = "main";
+const CLIENT_ID = (() => {
+  let c = localStorage.getItem("eboard-client-id");
+  if (!c) { c = uid(); localStorage.setItem("eboard-client-id", c); }
+  return c;
+})();
+
+let sb = null;
+let syncEnabled = false;
+if (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.supabase) {
+  try {
+    sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    syncEnabled = true;
+  } catch (e) { console.error("Supabase init failed", e); }
+}
+
+let lastSeen = null;          // updated_at we last applied
+let pushTimer = null;
+let pendingRemote = null;     // remote change waiting for user to stop typing
+
+const statusEl = document.getElementById("syncStatus");
+function setStatus(kind, text) {
+  statusEl.className = "sync-status " + kind;
+  statusEl.textContent = text;
+}
+
+function schedulePush() {
+  if (!syncEnabled) return;
+  setStatus("saving", "Saving…");
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushRemote, 600);
+}
+
+async function pushRemote() {
+  if (!syncEnabled) return;
+  const stamp = new Date().toISOString();
+  try {
+    const { error } = await sb.from("board").upsert(
+      { id: ROW_ID, data: state, client_id: CLIENT_ID, updated_at: stamp },
+      { onConflict: "id" }
+    );
+    if (error) throw error;
+    lastSeen = stamp;
+    setStatus("live", "Live · shared with everyone");
+  } catch (e) {
+    console.error("push failed", e);
+    setStatus("error", "Couldn't sync · saved locally");
+  }
+}
+
+function isTyping() {
+  const a = document.activeElement;
+  return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+}
+
+function applyRemote(remoteData, stamp) {
+  if (isTyping()) { pendingRemote = { remoteData, stamp }; return; }
+  state = remoteData;
+  MONTHS.forEach(m => { if (!state.months[m]) state.months[m] = { tasks: [], events: [] }; });
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  lastSeen = stamp;
+  render();
+  setStatus("live", "Live · shared with everyone");
+}
+
+document.addEventListener("focusout", () => {
+  if (!pendingRemote) return;
+  const p = pendingRemote;
+  setTimeout(() => {
+    if (pendingRemote === p && !isTyping()) { pendingRemote = null; applyRemote(p.remoteData, p.stamp); }
+  }, 80);
+});
+
+async function pollRemote() {
+  if (!syncEnabled) return;
+  try {
+    const { data, error } = await sb.from("board")
+      .select("data, client_id, updated_at").eq("id", ROW_ID).maybeSingle();
+    if (error) throw error;
+    if (!data || data.updated_at === lastSeen) return;
+    if (data.client_id === CLIENT_ID) { lastSeen = data.updated_at; return; }
+    applyRemote(data.data, data.updated_at);
+  } catch (e) {
+    console.error("poll failed", e);
+  }
+}
+
+async function initSync() {
+  if (!syncEnabled) {
+    setStatus("local", "Saved on this device only — see SETUP.md to share");
+    return;
+  }
+  setStatus("saving", "Connecting…");
+  try {
+    const { data, error } = await sb.from("board")
+      .select("data, client_id, updated_at").eq("id", ROW_ID).maybeSingle();
+    if (error) throw error;
+    if (data && data.data) {
+      state = data.data;
+      MONTHS.forEach(m => { if (!state.months[m]) state.months[m] = { tasks: [], events: [] }; });
+      localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      lastSeen = data.updated_at;
+      render();
+      setStatus("live", "Live · shared with everyone");
+    } else {
+      await pushRemote(); // first run: seed the cloud with whatever is local
+    }
+  } catch (e) {
+    console.error("connect failed", e);
+    setStatus("error", "Can't reach the cloud · saved locally");
+  }
+  setInterval(pollRemote, 4000);
+}
 
 /* ---------- Helpers ---------- */
 function escapeHtml(str = "") {
@@ -548,4 +668,5 @@ document.getElementById("importFile").addEventListener("change", e => {
 });
 
 /* ---------- Go ---------- */
-render();
+render();      // show local data instantly
+initSync();    // then connect to the cloud and keep in sync

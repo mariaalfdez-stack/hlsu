@@ -231,4 +231,20 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 .footer {
   border-top: 1px solid var(--line);
   padding: 16px 24px; text-align: center; color: var(--ink-soft); font-size: 13px;
+  display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap;
 }
+.dot-sep { opacity: .5; }
+.sync-status {
+  display: inline-flex; align-items: center; gap: 7px; font-weight: 600;
+}
+.sync-status::before {
+  content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--ink-soft);
+}
+.sync-status.live { color: var(--green); }
+.sync-status.live::before { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.sync-status.local { color: var(--amber); }
+.sync-status.local::before { background: var(--amber); }
+.sync-status.saving::before { background: var(--brand); animation: pulse 1s infinite; }
+.sync-status.error { color: var(--red); }
+.sync-status.error::before { background: var(--red); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }

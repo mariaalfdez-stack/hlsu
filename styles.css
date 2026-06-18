@@ -219,12 +219,18 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 .month-chip.active { background: var(--brand); color: white; border-color: var(--brand); }
 
 /* ---------- Tags / assignees ---------- */
+.assignees { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .assignee-tag {
   display: inline-flex; align-items: center; gap: 6px;
   background: white; border: 1px solid var(--line);
   padding: 2px 8px 2px 4px; border-radius: 999px; font-size: 12px; font-weight: 600;
 }
 .assignee-tag .dot { width: 16px; height: 16px; border-radius: 50%; color: white; display: grid; place-items: center; font-size: 9px; }
+.tag-x {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--ink-soft); font-size: 15px; line-height: 1; padding: 0 0 0 1px;
+}
+.tag-x:hover { color: var(--red); }
 
 /* ---------- Projects ---------- */
 .project-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
@@ -232,6 +238,8 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 .project-desc { color: var(--ink-soft); font-size: 14px; margin: 0 0 16px; }
 .todolist { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--surface-2); }
 .todolist + .todolist { margin-top: 12px; }
+.todolist .list-item { flex-wrap: wrap; }
+.todolist .li-text { min-width: 120px; }
 .todolist-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .todolist-head h4 { margin: 0; font-size: 15px; }
 .progress { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 8px 0 12px; }

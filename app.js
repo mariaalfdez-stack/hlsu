@@ -56,6 +56,20 @@ function normalize(s) {
   }
   // old global calendar is no longer used
   if (s.months) delete s.months;
+
+  // project tasks: migrate single assignee -> assignees array
+  s.projects.forEach(p => {
+    if (!Array.isArray(p.lists)) p.lists = [];
+    p.lists.forEach(l => {
+      if (!Array.isArray(l.tasks)) l.tasks = [];
+      l.tasks.forEach(t => {
+        if (!Array.isArray(t.assignees)) {
+          t.assignees = t.assignee ? [t.assignee] : [];
+        }
+        delete t.assignee;
+      });
+    });
+  });
   return s;
 }
 
@@ -300,7 +314,7 @@ function renderMembers() {
       if (!confirm(`Remove ${m.name}? This deletes their calendar and personal notes, and clears their project assignments.`)) return;
       state.members = state.members.filter(x => x.id !== id);
       state.projects.forEach(p => p.lists.forEach(l => l.tasks.forEach(t => {
-        if (t.assignee === id) t.assignee = null;
+        if (Array.isArray(t.assignees)) t.assignees = t.assignees.filter(a => a !== id);
       })));
       save();
       renderMembers();
@@ -572,19 +586,32 @@ function todoListHtml(projectId, list) {
   const pct = total ? Math.round((done / total) * 100) : 0;
 
   const rows = list.tasks.map(t => {
-    const m = t.assignee ? memberById(t.assignee) : null;
-    const tag = m
-      ? `<span class="assignee-tag"><span class="dot" style="background:${colorFor(m.id)}">${initials(m.name)}</span>${escapeHtml(m.name)}</span>`
-      : `<span class="assignee-tag" style="color:var(--ink-soft)">Unassigned</span>`;
+    const assignees = Array.isArray(t.assignees) ? t.assignees : [];
+    const tags = assignees.map(aid => {
+      const mm = memberById(aid);
+      if (!mm) return "";
+      return `<span class="assignee-tag">
+        <span class="dot" style="background:${colorFor(mm.id)}">${initials(mm.name)}</span>
+        ${escapeHtml(mm.name)}
+        <button class="tag-x" data-action="unassign" data-aid="${aid}" title="Remove">×</button>
+      </span>`;
+    }).join("");
+    const available = state.members.filter(mm => !assignees.includes(mm.id));
+    let picker;
+    if (available.length) {
+      picker = `<select data-action="assign" title="Assign to">
+        <option value="">${assignees.length ? "+ Add…" : "— Assign —"}</option>
+        ${available.map(mm => `<option value="${mm.id}">${escapeHtml(mm.name)}</option>`).join("")}
+      </select>`;
+    } else if (!assignees.length) {
+      picker = `<span class="assignee-tag" style="color:var(--ink-soft)">Add members to assign</span>`;
+    } else {
+      picker = "";
+    }
     return `<li class="list-item ${t.done ? "done" : ""}" data-id="${t.id}">
       <div class="check ${t.done ? "on" : ""}" data-action="toggle-ptask">${t.done ? "✓" : ""}</div>
       <span class="li-text">${escapeHtml(t.text)}</span>
-      <select data-action="assign" title="Assign to">
-        <option value="">— Assign —</option>
-        ${state.members.map(mm =>
-          `<option value="${mm.id}" ${mm.id === t.assignee ? "selected" : ""}>${escapeHtml(mm.name)}</option>`).join("")}
-      </select>
-      ${tag}
+      <span class="assignees">${tags}${picker}</span>
       <button class="icon-btn" data-action="del-ptask">✕</button>
     </li>`;
   }).join("");
@@ -643,7 +670,7 @@ function wireProjects() {
         e.preventDefault();
         const input = e.target.querySelector("input");
         const text = input.value.trim(); if (!text) return;
-        list.tasks.push({ id: uid(), text, done: false, assignee: null });
+        list.tasks.push({ id: uid(), text, done: false, assignees: [] });
         save(); renderProjects();
       });
 
@@ -656,8 +683,16 @@ function wireProjects() {
           list.tasks = list.tasks.filter(t => t.id !== task.id); save(); renderProjects();
         });
         li.querySelector('[data-action="assign"]')?.addEventListener("change", e => {
-          task.assignee = e.target.value || null; save(); renderProjects();
+          const id = e.target.value; if (!id) return;
+          if (!Array.isArray(task.assignees)) task.assignees = [];
+          if (!task.assignees.includes(id)) task.assignees.push(id);
+          save(); renderProjects();
         });
+        li.querySelectorAll('[data-action="unassign"]').forEach(b =>
+          b.addEventListener("click", () => {
+            task.assignees = (task.assignees || []).filter(a => a !== b.dataset.aid);
+            save(); renderProjects();
+          }));
       });
     });
   });

@@ -1,6 +1,7 @@
 /* =========================================================
-   Eboard HQ — a self-contained to-do / events / projects app.
-   All data lives in localStorage. No server required.
+   Eboard HQ — members each have their own calendar + personal
+   space. Projects are shared (tasks assigned across people).
+   All data lives in Supabase (if configured) and localStorage.
    ========================================================= */
 
 const STORE_KEY = "eboard-hq-v1";
@@ -18,20 +19,51 @@ const AVATAR_COLORS = [
 /* ---------- State ---------- */
 let state = load();
 
-function blankState() {
+function blankMonths() {
   const months = {};
   MONTHS.forEach(m => (months[m] = { tasks: [], events: [] }));
-  return { members: [], months, personal: {}, projects: [] };
+  return months;
+}
+function blankState() {
+  return { members: [], projects: [] };
+}
+
+/* Make sure any loaded data has the shape the app expects,
+   and migrate older formats (global calendar / personal map). */
+function normalize(s) {
+  if (!s || typeof s !== "object") return blankState();
+  if (!Array.isArray(s.members)) s.members = [];
+  if (!Array.isArray(s.projects)) s.projects = [];
+
+  s.members.forEach(m => {
+    if (!m.months) m.months = blankMonths();
+    else MONTHS.forEach(mo => { if (!m.months[mo]) m.months[mo] = { tasks: [], events: [] }; });
+    if (!m.personal) m.personal = { ideas: [], goals: [] };
+    if (!Array.isArray(m.personal.ideas)) m.personal.ideas = [];
+    if (!Array.isArray(m.personal.goals)) m.personal.goals = [];
+  });
+
+  // migrate old per-member personal map -> member.personal
+  if (s.personal) {
+    s.members.forEach(m => {
+      const old = s.personal[m.id];
+      if (old) {
+        if (Array.isArray(old.ideas)) m.personal.ideas = old.ideas.concat(m.personal.ideas);
+        if (Array.isArray(old.goals)) m.personal.goals = old.goals.concat(m.personal.goals);
+      }
+    });
+    delete s.personal;
+  }
+  // old global calendar is no longer used
+  if (s.months) delete s.months;
+  return s;
 }
 
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return blankState();
-    const parsed = JSON.parse(raw);
-    // make sure every month exists even if schema grew
-    MONTHS.forEach(m => { if (!parsed.months[m]) parsed.months[m] = { tasks: [], events: [] }; });
-    return parsed;
+    return normalize(JSON.parse(raw));
   } catch (e) {
     return blankState();
   }
@@ -46,8 +78,6 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 /* =========================================================
    CLOUD SYNC (Supabase) — optional.
-   If config.js has credentials, all boards share one copy
-   and update live. If not, the app just saves locally.
    ========================================================= */
 const ROW_ID = "main";
 const CLIENT_ID = (() => {
@@ -65,9 +95,9 @@ if (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.supabase) {
   } catch (e) { console.error("Supabase init failed", e); }
 }
 
-let lastSeen = null;          // updated_at we last applied
+let lastSeen = null;
 let pushTimer = null;
-let pendingRemote = null;     // remote change waiting for user to stop typing
+let pendingRemote = null;
 
 const statusEl = document.getElementById("syncStatus");
 function setStatus(kind, text) {
@@ -106,8 +136,7 @@ function isTyping() {
 
 function applyRemote(remoteData, stamp) {
   if (isTyping()) { pendingRemote = { remoteData, stamp }; return; }
-  state = remoteData;
-  MONTHS.forEach(m => { if (!state.months[m]) state.months[m] = { tasks: [], events: [] }; });
+  state = normalize(remoteData);
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   lastSeen = stamp;
   render();
@@ -147,14 +176,13 @@ async function initSync() {
       .select("data, client_id, updated_at").eq("id", ROW_ID).maybeSingle();
     if (error) throw error;
     if (data && data.data) {
-      state = data.data;
-      MONTHS.forEach(m => { if (!state.months[m]) state.months[m] = { tasks: [], events: [] }; });
+      state = normalize(data.data);
       localStorage.setItem(STORE_KEY, JSON.stringify(state));
       lastSeen = data.updated_at;
       render();
       setStatus("live", "Live · shared with everyone");
     } else {
-      await pushRemote(); // first run: seed the cloud with whatever is local
+      await pushRemote();
     }
   } catch (e) {
     console.error("connect failed", e);
@@ -185,47 +213,53 @@ function fmtDate(d) {
 }
 
 /* ---------- Router ---------- */
-let currentView = "members";
+let currentView = "members";   // "members" | "member" | "projects"
+let activeMemberId = null;
+let memberSubview = "calendar"; // "calendar" | "personal"
 let activeMonth = MONTHS[0];
-let activePerson = null;
 
 const app = document.getElementById("app");
 
 document.getElementById("tabs").addEventListener("click", e => {
   const btn = e.target.closest(".tab");
   if (!btn) return;
-  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === btn));
   currentView = btn.dataset.view;
   render();
 });
 
 function render() {
+  const topFor = currentView === "projects" ? "projects" : "members";
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.view === topFor));
+
   if (currentView === "members") renderMembers();
-  else if (currentView === "calendar") renderCalendar();
-  else if (currentView === "personal") renderPersonal();
+  else if (currentView === "member") renderMember();
   else if (currentView === "projects") renderProjects();
 }
 
 /* =========================================================
-   MEMBERS
+   MEMBERS (list)
    ========================================================= */
 function renderMembers() {
-  const cards = state.members.map(m => `
-    <div class="card member-card" data-id="${m.id}">
+  const cards = state.members.map(m => {
+    const openTasks = MONTHS.reduce((n, mo) => n + m.months[mo].tasks.filter(t => !t.done).length, 0);
+    return `
+    <div class="card member-card clickable" data-id="${m.id}">
       <div class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</div>
-      <div>
+      <div class="member-meta">
         <div class="name">${escapeHtml(m.name)}</div>
         <div class="role">${escapeHtml(m.role) || "Member"}</div>
+        <div class="mini">${openTasks} open task${openTasks === 1 ? "" : "s"} · open ›</div>
       </div>
       <button class="icon-btn" data-action="del-member" title="Remove">✕</button>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
 
   app.innerHTML = `
     <div class="view-head">
       <div>
         <h2>Eboard Members</h2>
-        <p>Everyone on the team. They'll show up for task assignment and personal pages.</p>
+        <p>Click a person to open their own calendar and personal space.</p>
       </div>
     </div>
     <div class="card" style="margin-bottom:18px">
@@ -245,19 +279,26 @@ function renderMembers() {
     const name = document.getElementById("mName").value.trim();
     if (!name) return;
     const role = document.getElementById("mRole").value.trim();
-    state.members.push({ id: uid(), name, role });
+    state.members.push({ id: uid(), name, role, months: blankMonths(), personal: { ideas: [], goals: [] } });
     save();
     renderMembers();
   });
 
-  app.querySelectorAll('[data-action="del-member"]').forEach(btn => {
-    btn.addEventListener("click", () => {
-      const id = btn.closest(".member-card").dataset.id;
+  app.querySelectorAll(".member-card").forEach(card => {
+    const id = card.dataset.id;
+    // open member space when clicking the card (but not the delete button)
+    card.addEventListener("click", e => {
+      if (e.target.closest('[data-action="del-member"]')) return;
+      activeMemberId = id;
+      memberSubview = "calendar";
+      currentView = "member";
+      render();
+    });
+    card.querySelector('[data-action="del-member"]').addEventListener("click", e => {
+      e.stopPropagation();
       const m = memberById(id);
-      if (!confirm(`Remove ${m.name}? Their assignments will be cleared.`)) return;
+      if (!confirm(`Remove ${m.name}? This deletes their calendar and personal notes, and clears their project assignments.`)) return;
       state.members = state.members.filter(x => x.id !== id);
-      delete state.personal[id];
-      // unassign from project tasks
       state.projects.forEach(p => p.lists.forEach(l => l.tasks.forEach(t => {
         if (t.assignee === id) t.assignee = null;
       })));
@@ -268,26 +309,50 @@ function renderMembers() {
 }
 
 /* =========================================================
-   CALENDAR  (months → tasks + events)
+   MEMBER (detail) — their own calendar + personal
    ========================================================= */
-function renderCalendar() {
-  const chips = MONTHS.map(m => {
-    const data = state.months[m];
-    const open = data.tasks.filter(t => !t.done).length;
-    return `<button class="month-chip ${m === activeMonth ? "active" : ""}" data-month="${m}">
-      ${m}${open ? ` <span class="pill">${open}</span>` : ""}
-    </button>`;
-  }).join("");
+function renderMember() {
+  const m = memberById(activeMemberId);
+  if (!m) { currentView = "members"; return renderMembers(); }
 
-  const data = state.months[activeMonth];
+  const body = memberSubview === "calendar" ? memberCalendarHtml(m) : memberPersonalHtml(m);
 
   app.innerHTML = `
-    <div class="view-head">
+    <button class="back-btn" id="backBtn">‹ All members</button>
+    <div class="member-header">
+      <div class="avatar lg" style="background:${colorFor(m.id)}">${initials(m.name)}</div>
       <div>
-        <h2>School-Year Calendar</h2>
-        <p>Pick a month, then track its to-dos and events.</p>
+        <h2>${escapeHtml(m.name)}</h2>
+        <p>${escapeHtml(m.role) || "Member"}</p>
       </div>
     </div>
+    <div class="subtabs">
+      <button class="month-chip ${memberSubview === "calendar" ? "active" : ""}" data-sub="calendar">📅 Calendar</button>
+      <button class="month-chip ${memberSubview === "personal" ? "active" : ""}" data-sub="personal">💡 Personal</button>
+    </div>
+    <div id="memberBody">${body}</div>
+  `;
+
+  document.getElementById("backBtn").addEventListener("click", () => {
+    currentView = "members"; render();
+  });
+  app.querySelectorAll("[data-sub]").forEach(b =>
+    b.addEventListener("click", () => { memberSubview = b.dataset.sub; renderMember(); }));
+
+  if (memberSubview === "calendar") wireMemberCalendar(m);
+  else wireMemberPersonal(m);
+}
+
+/* ----- Member calendar ----- */
+function memberCalendarHtml(m) {
+  const chips = MONTHS.map(mo => {
+    const open = m.months[mo].tasks.filter(t => !t.done).length;
+    return `<button class="month-chip ${mo === activeMonth ? "active" : ""}" data-month="${mo}">
+      ${mo}${open ? ` <span class="pill">${open}</span>` : ""}</button>`;
+  }).join("");
+
+  const data = m.months[activeMonth];
+  return `
     <div class="month-bar">${chips}</div>
     <div class="two-col">
       <div class="card">
@@ -317,21 +382,22 @@ function renderCalendar() {
       </div>
     </div>
   `;
+}
 
-  // month switching
-  app.querySelectorAll(".month-chip").forEach(c =>
-    c.addEventListener("click", () => { activeMonth = c.dataset.month; renderCalendar(); }));
+function wireMemberCalendar(m) {
+  const data = m.months[activeMonth];
 
-  // add task
+  app.querySelectorAll(".month-bar .month-chip").forEach(c =>
+    c.addEventListener("click", () => { activeMonth = c.dataset.month; renderMember(); }));
+
   document.getElementById("taskForm").addEventListener("submit", e => {
     e.preventDefault();
     const text = document.getElementById("taskText").value.trim();
     if (!text) return;
     data.tasks.push({ id: uid(), text, done: false });
-    save(); renderCalendar();
+    save(); renderMember();
   });
 
-  // add event
   document.getElementById("eventForm").addEventListener("submit", e => {
     e.preventDefault();
     const title = document.getElementById("evTitle").value.trim();
@@ -341,81 +407,17 @@ function renderCalendar() {
       date: document.getElementById("evDate").value,
       note: document.getElementById("evNote").value.trim()
     });
-    save(); renderCalendar();
+    save(); renderMember();
   });
 
-  wireTaskList(app.querySelector("#taskList"), data.tasks, renderCalendar);
-  wireEventList(app.querySelector("#eventList"), data.events, renderCalendar);
+  wireTaskList(app.querySelector("#taskList"), data.tasks, renderMember);
+  wireEventList(app.querySelector("#eventList"), data.events, renderMember);
 }
 
-function taskRow(t) {
-  return `<li class="list-item ${t.done ? "done" : ""}" data-id="${t.id}">
-    <div class="check ${t.done ? "on" : ""}" data-action="toggle">${t.done ? "✓" : ""}</div>
-    <span class="li-text">${escapeHtml(t.text)}</span>
-    <button class="icon-btn" data-action="del">✕</button>
-  </li>`;
-}
-function eventRow(ev) {
-  const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
-  return `<li class="list-item" data-id="${ev.id}">
-    <span class="li-text">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
-    <button class="icon-btn" data-action="del">✕</button>
-  </li>`;
-}
-
-function wireTaskList(ul, arr, rerender) {
-  if (!ul) return;
-  ul.addEventListener("click", e => {
-    const li = e.target.closest(".list-item"); if (!li) return;
-    const item = arr.find(x => x.id === li.dataset.id); if (!item) return;
-    const action = e.target.closest("[data-action]")?.dataset.action;
-    if (action === "toggle") item.done = !item.done;
-    else if (action === "del") { const i = arr.indexOf(item); arr.splice(i, 1); }
-    else return;
-    save(); rerender();
-  });
-}
-function wireEventList(ul, arr, rerender) {
-  if (!ul) return;
-  ul.addEventListener("click", e => {
-    if (e.target.closest("[data-action]")?.dataset.action !== "del") return;
-    const li = e.target.closest(".list-item");
-    const i = arr.findIndex(x => x.id === li.dataset.id);
-    if (i > -1) { arr.splice(i, 1); save(); rerender(); }
-  });
-}
-
-/* =========================================================
-   PERSONAL  (ideas + goals per member)
-   ========================================================= */
-function renderPersonal() {
-  if (!state.members.length) {
-    app.innerHTML = `
-      <div class="view-head"><div><h2>Personal Space</h2>
-        <p>Private ideas and goals for each member.</p></div></div>
-      ${emptyState("🧠", "Add members first", "Head to the Members tab to add people, then give them a personal page here.")}`;
-    return;
-  }
-  if (!activePerson || !memberById(activePerson)) activePerson = state.members[0].id;
-
-  const options = state.members.map(m =>
-    `<option value="${m.id}" ${m.id === activePerson ? "selected" : ""}>${escapeHtml(m.name)}</option>`
-  ).join("");
-
-  const p = (state.personal[activePerson] = state.personal[activePerson] || { ideas: [], goals: [] });
-  const m = memberById(activePerson);
-
-  app.innerHTML = `
-    <div class="view-head">
-      <div>
-        <h2>Personal Space</h2>
-        <p>Ideas and goals, kept per person.</p>
-      </div>
-      <div class="row" style="align-items:center">
-        <div class="avatar" style="background:${colorFor(m.id)};width:38px;height:38px;font-size:15px">${initials(m.name)}</div>
-        <select id="personSel">${options}</select>
-      </div>
-    </div>
+/* ----- Member personal ----- */
+function memberPersonalHtml(m) {
+  const p = m.personal;
+  return `
     <div class="two-col">
       <div class="card">
         <div class="section-title">💡 Ideas</div>
@@ -437,31 +439,45 @@ function renderPersonal() {
       </div>
     </div>
   `;
+}
 
-  document.getElementById("personSel").addEventListener("change", e => {
-    activePerson = e.target.value; renderPersonal();
-  });
+function wireMemberPersonal(m) {
+  const p = m.personal;
   document.getElementById("ideaForm").addEventListener("submit", e => {
     e.preventDefault();
     const text = document.getElementById("ideaText").value.trim(); if (!text) return;
-    p.ideas.push({ id: uid(), text }); save(); renderPersonal();
+    p.ideas.push({ id: uid(), text }); save(); renderMember();
   });
   document.getElementById("goalForm").addEventListener("submit", e => {
     e.preventDefault();
     const text = document.getElementById("goalText").value.trim(); if (!text) return;
-    p.goals.push({ id: uid(), text, done: false }); save(); renderPersonal();
+    p.goals.push({ id: uid(), text, done: false }); save(); renderMember();
   });
 
-  // ideas list (delete only)
   app.querySelector("#ideaList").addEventListener("click", e => {
     if (e.target.closest("[data-action]")?.dataset.action !== "del") return;
     const li = e.target.closest(".list-item");
     const i = p.ideas.findIndex(x => x.id === li.dataset.id);
-    if (i > -1) { p.ideas.splice(i, 1); save(); renderPersonal(); }
+    if (i > -1) { p.ideas.splice(i, 1); save(); renderMember(); }
   });
-  wireTaskList(app.querySelector("#goalList"), p.goals, renderPersonal);
+  wireTaskList(app.querySelector("#goalList"), p.goals, renderMember);
 }
 
+/* ---------- Shared row renderers ---------- */
+function taskRow(t) {
+  return `<li class="list-item ${t.done ? "done" : ""}" data-id="${t.id}">
+    <div class="check ${t.done ? "on" : ""}" data-action="toggle">${t.done ? "✓" : ""}</div>
+    <span class="li-text">${escapeHtml(t.text)}</span>
+    <button class="icon-btn" data-action="del">✕</button>
+  </li>`;
+}
+function eventRow(ev) {
+  const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
+  return `<li class="list-item" data-id="${ev.id}">
+    <span class="li-text">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
+    <button class="icon-btn" data-action="del">✕</button>
+  </li>`;
+}
 function simpleRow(it) {
   return `<li class="list-item" data-id="${it.id}">
     <span class="li-text">${escapeHtml(it.text)}</span>
@@ -469,8 +485,30 @@ function simpleRow(it) {
   </li>`;
 }
 
+function wireTaskList(ul, arr, rerender) {
+  if (!ul) return;
+  ul.addEventListener("click", e => {
+    const li = e.target.closest(".list-item"); if (!li) return;
+    const item = arr.find(x => x.id === li.dataset.id); if (!item) return;
+    const action = e.target.closest("[data-action]")?.dataset.action;
+    if (action === "toggle") item.done = !item.done;
+    else if (action === "del") arr.splice(arr.indexOf(item), 1);
+    else return;
+    save(); rerender();
+  });
+}
+function wireEventList(ul, arr, rerender) {
+  if (!ul) return;
+  ul.addEventListener("click", e => {
+    if (e.target.closest("[data-action]")?.dataset.action !== "del") return;
+    const li = e.target.closest(".list-item");
+    const i = arr.findIndex(x => x.id === li.dataset.id);
+    if (i > -1) { arr.splice(i, 1); save(); rerender(); }
+  });
+}
+
 /* =========================================================
-   PROJECTS  (project → to-do lists → assigned tasks)
+   PROJECTS  (shared: project → to-do lists → assigned tasks)
    ========================================================= */
 function renderProjects() {
   const projectsHtml = state.projects.map(projectCard).join("");
@@ -515,9 +553,7 @@ function projectCard(p) {
   return `
     <div class="card" data-project="${p.id}">
       <div class="project-head">
-        <div>
-          <h3>${escapeHtml(p.name)}</h3>
-        </div>
+        <div><h3>${escapeHtml(p.name)}</h3></div>
         <button class="icon-btn" data-action="del-project" title="Delete project">✕</button>
       </div>
       ${p.desc ? `<p class="project-desc">${escapeHtml(p.desc)}</p>` : ""}
@@ -579,14 +615,12 @@ function wireProjects() {
     const projectId = card.dataset.project;
     const project = state.projects.find(p => p.id === projectId);
 
-    // delete project
     card.querySelector('[data-action="del-project"]').addEventListener("click", () => {
       if (!confirm(`Delete project "${project.name}"?`)) return;
       state.projects = state.projects.filter(p => p.id !== projectId);
       save(); renderProjects();
     });
 
-    // add list
     card.querySelector('form[data-action="add-list"]').addEventListener("submit", e => {
       e.preventDefault();
       const input = e.target.querySelector("input");
@@ -595,7 +629,6 @@ function wireProjects() {
       save(); renderProjects();
     });
 
-    // per-list wiring
     card.querySelectorAll("[data-list]").forEach(listEl => {
       const listId = listEl.dataset.list;
       const [, list] = findList(projectId, listId);
@@ -656,10 +689,9 @@ document.getElementById("importFile").addEventListener("change", e => {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
-      if (!data.members || !data.months) throw new Error("bad file");
+      if (!data.members) throw new Error("bad file");
       if (!confirm("Importing will replace your current data. Continue?")) return;
-      state = data;
-      MONTHS.forEach(m => { if (!state.months[m]) state.months[m] = { tasks: [], events: [] }; });
+      state = normalize(data);
       save(); render();
     } catch (err) { alert("Sorry, that doesn't look like a valid backup file."); }
   };

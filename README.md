@@ -19,12 +19,13 @@ It walks you (click-by-click) through two things:
 
 ## What's inside
 
-- **Members** — add each eboard member with their name and role.
-- **Calendar** — every month of the school year (August → July). Each month has
-  its own **to-do list** and **events** list.
-- **Personal** — pick a person and jot down their personal **ideas** and **goals**.
-- **Projects** — create a project, add **to-do lists** inside it, and **assign**
-  each task to a member.
+- **Members** — add each eboard member with their name and role. Click a person
+  to open their own space, which has two parts:
+  - **Calendar** — every month of the school year (August → July), each with its
+    own **to-do list** and **events** list, just for that person.
+  - **Personal** — that person's own **ideas** and **goals**.
+- **Projects** (shared) — create a project, add **to-do lists** inside it, and
+  **assign** each task to a member.
 
 ## Your data
 

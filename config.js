@@ -11,5 +11,5 @@
    only on this one computer instead of sharing with everyone.
    ========================================================= */
 
-window.SUPABASE_URL = "";
-window.SUPABASE_ANON_KEY = "";
+window.SUPABASE_URL = "https://cxbiccsrxawgdbjgobin.supabase.co";
+window.SUPABASE_ANON_KEY = "sb_publishable_FiQB3tcFHbwmp2OoIEZx3g_sgfIgpLi";

@@ -103,6 +103,11 @@ function normalize(s) {
         delete t.assignee;
       });
     });
+    // project-level events (shown on everyone's calendar by month)
+    if (!Array.isArray(p.events)) p.events = [];
+    p.events.forEach(ev => {
+      if (ev.checklist === undefined) ev.checklist = ev.date ? buildEventChecklist(ev.date) : [];
+    });
   });
   return s;
 }
@@ -259,6 +264,36 @@ function fmtDate(d) {
   if (!d) return "";
   const dt = new Date(d + "T00:00:00");
   return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+/* ---------- Cross-links between projects and member pages ---------- */
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+function monthNameOf(dateStr) {
+  if (!dateStr) return null;
+  return MONTH_NAMES[new Date(dateStr + "T00:00:00").getMonth()];
+}
+// project events that land in a given month (shown on everyone's calendar)
+function projectEventsForMonth(monthName) {
+  const out = [];
+  state.projects.forEach(p => (p.events || []).forEach(ev => {
+    if (ev.date && monthNameOf(ev.date) === monthName) out.push({ ev, project: p });
+  }));
+  return out;
+}
+// project tasks assigned to a member (shown on their to-do list)
+function assignedTasksFor(memberId) {
+  const out = [];
+  state.projects.forEach(p => p.lists.forEach(l => l.tasks.forEach(t => {
+    if (Array.isArray(t.assignees) && t.assignees.includes(memberId))
+      out.push({ task: t, list: l, project: p });
+  })));
+  return out;
+}
+function findProjectTask(pid, lid, tid) {
+  const p = state.projects.find(x => x.id === pid);
+  const l = p && p.lists.find(x => x.id === lid);
+  return l && l.tasks.find(x => x.id === tid);
 }
 
 /* ---------- Event checklist date math ---------- */
@@ -452,7 +487,32 @@ function memberCalendarHtml(m) {
   }).join("");
 
   const data = m.months[activeMonth];
+
+  // project tasks assigned to this member (across all projects)
+  const assigned = assignedTasksFor(m.id);
+  const assignedHtml = assigned.length ? `
+    <div class="card" style="margin-bottom:18px">
+      <div class="section-title">📋 Assigned project tasks <span class="pill">${assigned.filter(a => !a.task.done).length} open</span></div>
+      <ul class="list" id="assignedList">
+        ${assigned.map(a => `
+          <li class="list-item ${a.task.done ? "done" : ""}" data-pid="${a.project.id}" data-lid="${a.list.id}" data-tid="${a.task.id}">
+            <div class="check ${a.task.done ? "on" : ""}" data-action="toggle-assigned">${a.task.done ? "✓" : ""}</div>
+            <span class="li-text">${escapeHtml(a.task.text)}<small>📁 ${escapeHtml(a.project.name)} › ${escapeHtml(a.list.name)}</small></span>
+          </li>`).join("")}
+      </ul>
+    </div>` : "";
+
+  // events = this member's own events for the month + project events in this month
+  const merged = [
+    ...data.events.map(ev => ({ ev, kind: "own" })),
+    ...projectEventsForMonth(activeMonth).map(x => ({ ev: x.ev, kind: "project", project: x.project }))
+  ].sort((a, b) => (a.ev.date || "").localeCompare(b.ev.date || ""));
+  const eventsHtml = merged.map(x =>
+    x.kind === "own" ? eventRow(x.ev) : projectEventRow(x.ev, x.project)
+  ).join("") || `<li class="empty" style="padding:24px">No events yet.</li>`;
+
   return `
+    ${assignedHtml}
     <div class="month-bar">${chips}</div>
     <div class="two-col">
       <div class="card">
@@ -476,9 +536,7 @@ function memberCalendarHtml(m) {
             <button class="btn" type="submit">Add</button>
           </div>
         </form>
-        <ul class="list" id="eventList">${
-          [...data.events].sort((a, b) => (a.date || "").localeCompare(b.date || "")).map(eventRow).join("") ||
-          `<li class="empty" style="padding:24px">No events yet.</li>`}</ul>
+        <ul class="list" id="eventList">${eventsHtml}</ul>
       </div>
     </div>
   `;
@@ -513,6 +571,15 @@ function wireMemberCalendar(m) {
 
   wireTaskList(app.querySelector("#taskList"), data.tasks, renderMember);
   wireEventList(app.querySelector("#eventList"), data.events, renderMember);
+
+  // checking off an assigned project task updates the real task in its project
+  const assignedList = app.querySelector("#assignedList");
+  if (assignedList) assignedList.addEventListener("click", e => {
+    if (e.target.closest("[data-action]")?.dataset.action !== "toggle-assigned") return;
+    const li = e.target.closest(".list-item");
+    const t = findProjectTask(li.dataset.pid, li.dataset.lid, li.dataset.tid);
+    if (t) { t.done = !t.done; save(); renderMember(); }
+  });
 }
 
 /* ----- Member personal ----- */
@@ -597,6 +664,16 @@ function simpleRow(it) {
     <button class="icon-btn" data-action="del">✕</button>
   </li>`;
 }
+// a project event shown (read-only) on a member's calendar; managed in Projects
+function projectEventRow(ev, project) {
+  const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
+  return `<li class="list-item event-item project-event" data-id="${ev.id}">
+    <div class="event-main">
+      <span class="li-text">${escapeHtml(ev.title)}<small>${meta ? escapeHtml(meta) + " · " : ""}📁 ${escapeHtml(project.name)}</small></span>
+      <span class="tag-proj">Project</span>
+    </div>
+  </li>`;
+}
 
 function wireTaskList(ul, arr, rerender) {
   if (!ul) return;
@@ -672,6 +749,9 @@ function renderProjects() {
 
 function projectCard(p) {
   const lists = p.lists.map(l => todoListHtml(p.id, l)).join("");
+  const events = (p.events || [])
+    .slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+    .map(eventRow).join("");
   return `
     <div class="card" data-project="${p.id}">
       <div class="project-head">
@@ -683,6 +763,20 @@ function projectCard(p) {
       <form data-action="add-list" class="row" style="margin-top:14px">
         <input type="text" placeholder="New to-do list (e.g. Logistics)" required />
         <button class="btn ghost" type="submit">+ List</button>
+      </form>
+
+      <div class="section-title" style="margin-top:20px">📅 Events <span class="pill">on everyone's calendar</span></div>
+      <ul class="list proj-event-list">${events ||
+        `<li class="empty" style="padding:16px">No events yet.</li>`}</ul>
+      <form data-action="add-event" style="margin-top:10px">
+        <div class="row" style="margin-bottom:8px">
+          <input type="text" name="title" placeholder="Event name…" required />
+        </div>
+        <div class="row">
+          <input type="date" name="date" />
+          <input type="text" name="note" placeholder="Location / note" />
+          <button class="btn ghost" type="submit">+ Event</button>
+        </div>
       </form>
     </div>
   `;
@@ -763,6 +857,21 @@ function wireProjects() {
       project.lists.push({ id: uid(), name, tasks: [] });
       save(); renderProjects();
     });
+
+    // create a project event -> shows on everyone's calendar for its month
+    card.querySelector('form[data-action="add-event"]').addEventListener("submit", e => {
+      e.preventDefault();
+      const title = e.target.querySelector('[name="title"]').value.trim(); if (!title) return;
+      const date = e.target.querySelector('[name="date"]').value;
+      if (!Array.isArray(project.events)) project.events = [];
+      project.events.push({
+        id: uid(), title, date,
+        note: e.target.querySelector('[name="note"]').value.trim(),
+        checklist: buildEventChecklist(date)
+      });
+      save(); renderProjects();
+    });
+    wireEventList(card.querySelector(".proj-event-list"), project.events, renderProjects);
 
     card.querySelectorAll("[data-list]").forEach(listEl => {
       const listId = listEl.dataset.list;

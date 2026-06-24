@@ -214,6 +214,14 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 .ci-due { color: var(--ink-soft); font-weight: 600; font-size: 12px; white-space: nowrap; }
 .ci-due.tbd { color: var(--amber); }
 
+/* project event shown on a member's calendar */
+.project-event { background: #f4f1ff; border-color: var(--brand-soft); }
+.tag-proj {
+  background: var(--brand-soft); color: var(--brand-ink);
+  font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+}
+.proj-event-list { margin-top: 4px; }
+
 .section-title {
   font-size: 13px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .6px; color: var(--ink-soft); margin: 0 0 12px;

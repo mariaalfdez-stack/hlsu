@@ -91,22 +91,40 @@ function normalize(s) {
   // old global calendar is no longer used
   if (s.months) delete s.months;
 
-  // project tasks: migrate single assignee -> assignees array
+  // projects -> events -> assignable to-do items
   s.projects.forEach(p => {
-    if (!Array.isArray(p.lists)) p.lists = [];
-    p.lists.forEach(l => {
-      if (!Array.isArray(l.tasks)) l.tasks = [];
-      l.tasks.forEach(t => {
-        if (!Array.isArray(t.assignees)) {
-          t.assignees = t.assignee ? [t.assignee] : [];
-        }
-        delete t.assignee;
-      });
-    });
-    // project-level events (shown on everyone's calendar by month)
     if (!Array.isArray(p.events)) p.events = [];
+
+    // migrate legacy project.lists/tasks into a single catch-all event
+    if (Array.isArray(p.lists) && p.lists.length) {
+      const migrated = [];
+      p.lists.forEach(l => (l.tasks || []).forEach(t => migrated.push({
+        id: t.id || uid(),
+        label: t.text || "Task",
+        due: null,
+        done: !!t.done,
+        assignees: Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : [])
+      })));
+      if (migrated.length) {
+        p.events.push({ id: uid(), title: "General tasks", date: "", note: "", todos: migrated });
+      }
+    }
+    delete p.lists;
+
     p.events.forEach(ev => {
-      if (ev.checklist === undefined) ev.checklist = ev.date ? buildEventChecklist(ev.date) : [];
+      if (!Array.isArray(ev.todos)) {
+        if (Array.isArray(ev.checklist)) {
+          // older project events stored a non-assignable checklist
+          ev.todos = ev.checklist.map(c => ({
+            id: c.id || uid(), label: c.label, due: c.due == null ? null : c.due,
+            done: !!c.done, assignees: []
+          }));
+        } else {
+          ev.todos = ev.date ? buildEventTodos(ev.date) : [];
+        }
+      }
+      ev.todos.forEach(t => { if (!Array.isArray(t.assignees)) t.assignees = []; });
+      delete ev.checklist;
     });
   });
   return s;
@@ -281,19 +299,19 @@ function projectEventsForMonth(monthName) {
   }));
   return out;
 }
-// project tasks assigned to a member (shown on their to-do list)
+// project to-do items assigned to a member (shown on their to-do list)
 function assignedTasksFor(memberId) {
   const out = [];
-  state.projects.forEach(p => p.lists.forEach(l => l.tasks.forEach(t => {
+  state.projects.forEach(p => (p.events || []).forEach(ev => (ev.todos || []).forEach(t => {
     if (Array.isArray(t.assignees) && t.assignees.includes(memberId))
-      out.push({ task: t, list: l, project: p });
+      out.push({ todo: t, event: ev, project: p });
   })));
   return out;
 }
-function findProjectTask(pid, lid, tid) {
+function findProjectTodo(pid, eid, tid) {
   const p = state.projects.find(x => x.id === pid);
-  const l = p && p.lists.find(x => x.id === lid);
-  return l && l.tasks.find(x => x.id === tid);
+  const ev = p && (p.events || []).find(x => x.id === eid);
+  return ev && (ev.todos || []).find(x => x.id === tid);
 }
 
 /* ---------- Event checklist date math ---------- */
@@ -346,12 +364,18 @@ function buildEventChecklist(eventDateStr) {
   });
   return items;
 }
+// same items, but each is an assignable project to-do
+function buildEventTodos(dateStr) {
+  return buildEventChecklist(dateStr).map(it => ({ ...it, assignees: [] }));
+}
 
 /* ---------- Router ---------- */
-let currentView = "members";   // "members" | "member" | "projects"
+let currentView = "dashboard"; // dashboard | members | member | projects | project
 let activeMemberId = null;
 let memberSubview = "calendar"; // "calendar" | "personal"
 let activeMonth = MONTHS[0];
+let activeProjectId = null;
+let expandedEvents = new Set();
 
 const app = document.getElementById("app");
 
@@ -363,13 +387,95 @@ document.getElementById("tabs").addEventListener("click", e => {
 });
 
 function render() {
-  const topFor = currentView === "projects" ? "projects" : "members";
+  const topFor =
+    (currentView === "projects" || currentView === "project") ? "projects" :
+    (currentView === "members" || currentView === "member") ? "members" :
+    "dashboard";
   document.querySelectorAll(".tab").forEach(t =>
     t.classList.toggle("active", t.dataset.view === topFor));
 
-  if (currentView === "members") renderMembers();
+  if (currentView === "dashboard") renderDashboard();
+  else if (currentView === "members") renderMembers();
   else if (currentView === "member") renderMember();
   else if (currentView === "projects") renderProjects();
+  else if (currentView === "project") renderProject();
+}
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function renderDashboard() {
+  const today = todayISO();
+
+  // upcoming project events (dated, today or later)
+  const allEv = [];
+  state.projects.forEach(p => (p.events || []).forEach(ev => { if (ev.date) allEv.push({ ev, p }); }));
+  const upcoming = allEv.filter(x => x.ev.date >= today)
+    .sort((a, b) => a.ev.date.localeCompare(b.ev.date)).slice(0, 8);
+
+  const upcomingHtml = upcoming.length ? upcoming.map(x => {
+    const todos = x.ev.todos || [];
+    const done = todos.filter(t => t.done).length;
+    return `<li class="list-item clickable dash-event" data-pid="${x.p.id}" data-eid="${x.ev.id}">
+      <span class="li-text">${escapeHtml(x.ev.title)}<small>${escapeHtml(fmtDate(x.ev.date))} · 📁 ${escapeHtml(x.p.name)}</small></span>
+      <span class="pill">${done}/${todos.length}</span>
+    </li>`;
+  }).join("") : `<li class="empty" style="padding:20px">No upcoming events. Add one in a project.</li>`;
+
+  // workload per member (open assigned project to-dos)
+  const workload = state.members.map(m => {
+    const a = assignedTasksFor(m.id);
+    const open = a.filter(x => !x.todo.done);
+    const nextDue = open.map(x => x.todo.due).filter(Boolean).sort()[0] || null;
+    return { m, open: open.length, nextDue };
+  }).sort((a, b) => b.open - a.open);
+
+  const workloadHtml = state.members.length ? workload.map(w => `
+    <li class="list-item clickable dash-member" data-id="${w.m.id}">
+      <div class="avatar" style="background:${colorFor(w.m.id)};width:34px;height:34px;font-size:13px">${initials(w.m.name)}</div>
+      <span class="li-text">${escapeHtml(w.m.name)}<small>${w.open} open task${w.open === 1 ? "" : "s"}${w.nextDue ? ` · next due ${escapeHtml(fmtDate(w.nextDue))}` : ""}</small></span>
+      <span class="pill">${w.open}</span>
+    </li>`).join("") : `<li class="empty" style="padding:20px">No members yet.</li>`;
+
+  const totalOpen = workload.reduce((n, w) => n + w.open, 0);
+
+  app.innerHTML = `
+    <div class="view-head"><div><h2>Dashboard</h2><p>A quick overview of what's coming up and who's on what.</p></div></div>
+    <div class="grid cols" style="margin-bottom:18px">
+      <div class="card stat"><div class="stat-num">${state.members.length}</div><div class="stat-lbl">Members</div></div>
+      <div class="card stat"><div class="stat-num">${state.projects.length}</div><div class="stat-lbl">Projects</div></div>
+      <div class="card stat"><div class="stat-num">${upcoming.length}</div><div class="stat-lbl">Upcoming events</div></div>
+      <div class="card stat"><div class="stat-num">${totalOpen}</div><div class="stat-lbl">Open assigned tasks</div></div>
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <div class="section-title">📅 Upcoming events</div>
+        <ul class="list">${upcomingHtml}</ul>
+      </div>
+      <div class="card">
+        <div class="section-title">👥 Workload by person</div>
+        <ul class="list">${workloadHtml}</ul>
+      </div>
+    </div>
+  `;
+
+  app.querySelectorAll(".dash-event").forEach(li => li.addEventListener("click", () => {
+    activeProjectId = li.dataset.pid;
+    expandedEvents.add(li.dataset.eid);
+    currentView = "project";
+    render();
+  }));
+  app.querySelectorAll(".dash-member").forEach(li => li.addEventListener("click", () => {
+    activeMemberId = li.dataset.id;
+    memberSubview = "calendar";
+    currentView = "member";
+    render();
+  }));
 }
 
 /* =========================================================
@@ -434,7 +540,7 @@ function renderMembers() {
       const m = memberById(id);
       if (!confirm(`Remove ${m.name}? This deletes their calendar and personal notes, and clears their project assignments.`)) return;
       state.members = state.members.filter(x => x.id !== id);
-      state.projects.forEach(p => p.lists.forEach(l => l.tasks.forEach(t => {
+      state.projects.forEach(p => (p.events || []).forEach(ev => (ev.todos || []).forEach(t => {
         if (Array.isArray(t.assignees)) t.assignees = t.assignees.filter(a => a !== id);
       })));
       save();
@@ -488,19 +594,22 @@ function memberCalendarHtml(m) {
 
   const data = m.months[activeMonth];
 
-  // project tasks assigned to this member (across all projects)
-  const assigned = assignedTasksFor(m.id);
-  const assignedHtml = assigned.length ? `
-    <div class="card" style="margin-bottom:18px">
-      <div class="section-title">📋 Assigned project tasks <span class="pill">${assigned.filter(a => !a.task.done).length} open</span></div>
-      <ul class="list" id="assignedList">
-        ${assigned.map(a => `
-          <li class="list-item ${a.task.done ? "done" : ""}" data-pid="${a.project.id}" data-lid="${a.list.id}" data-tid="${a.task.id}">
-            <div class="check ${a.task.done ? "on" : ""}" data-action="toggle-assigned">${a.task.done ? "✓" : ""}</div>
-            <span class="li-text">${escapeHtml(a.task.text)}<small>📁 ${escapeHtml(a.project.name)} › ${escapeHtml(a.list.name)}</small></span>
-          </li>`).join("")}
-      </ul>
-    </div>` : "";
+  // ONE combined to-do list: assigned project items first, then personal tasks
+  const assigned = assignedTasksFor(m.id).slice().sort((a, b) => {
+    const ad = a.todo.due, bd = b.todo.due;
+    if (!ad && !bd) return 0; if (!ad) return 1; if (!bd) return -1;
+    return ad.localeCompare(bd);
+  });
+  const assignedRows = assigned.map(a => `
+    <li class="list-item assigned-row ${a.todo.done ? "done" : ""}" data-pid="${a.project.id}" data-eid="${a.event.id}" data-tid="${a.todo.id}">
+      <div class="check ${a.todo.done ? "on" : ""}" data-action="toggle-assigned">${a.todo.done ? "✓" : ""}</div>
+      <span class="li-text">${escapeHtml(a.todo.label)}<small>📁 ${escapeHtml(a.project.name)} › ${escapeHtml(a.event.title)}${a.todo.due ? ` · due ${escapeHtml(fmtDate(a.todo.due))}` : ""}</small></span>
+    </li>`).join("");
+  const personalRows = data.tasks.map(taskRow).join("");
+  const todoBody =
+    (assigned.length ? `<li class="list-subhead">From projects · assigned to you</li>${assignedRows}` : "") +
+    `<li class="list-subhead">${activeMonth} · personal</li>` +
+    (personalRows || `<li class="empty" style="padding:16px">No personal tasks yet.</li>`);
 
   // events = this member's own events for the month + project events in this month
   const merged = [
@@ -512,17 +621,15 @@ function memberCalendarHtml(m) {
   ).join("") || `<li class="empty" style="padding:24px">No events yet.</li>`;
 
   return `
-    ${assignedHtml}
     <div class="month-bar">${chips}</div>
     <div class="two-col">
       <div class="card">
-        <div class="section-title">✓ To-Do · <span class="pill">${activeMonth}</span></div>
+        <div class="section-title">✓ To-Do <span class="pill">${assigned.filter(a => !a.todo.done).length + data.tasks.filter(t => !t.done).length} open</span></div>
         <form id="taskForm" class="row" style="margin-bottom:14px">
-          <input type="text" id="taskText" placeholder="Add a task…" required />
+          <input type="text" id="taskText" placeholder="Add a personal task for ${activeMonth}…" required />
           <button class="btn" type="submit">Add</button>
         </form>
-        <ul class="list" id="taskList">${data.tasks.map(taskRow).join("") ||
-          `<li class="empty" style="padding:24px">No tasks yet.</li>`}</ul>
+        <ul class="list" id="taskList">${todoBody}</ul>
       </div>
       <div class="card">
         <div class="section-title">📅 Events · <span class="pill">${activeMonth}</span></div>
@@ -569,16 +676,22 @@ function wireMemberCalendar(m) {
     save(); renderMember();
   });
 
-  wireTaskList(app.querySelector("#taskList"), data.tasks, renderMember);
   wireEventList(app.querySelector("#eventList"), data.events, renderMember);
 
-  // checking off an assigned project task updates the real task in its project
-  const assignedList = app.querySelector("#assignedList");
-  if (assignedList) assignedList.addEventListener("click", e => {
-    if (e.target.closest("[data-action]")?.dataset.action !== "toggle-assigned") return;
-    const li = e.target.closest(".list-item");
-    const t = findProjectTask(li.dataset.pid, li.dataset.lid, li.dataset.tid);
-    if (t) { t.done = !t.done; save(); renderMember(); }
+  // one combined to-do list handles both assigned project items and personal tasks
+  app.querySelector("#taskList").addEventListener("click", e => {
+    const action = e.target.closest("[data-action]")?.dataset.action;
+    const li = e.target.closest(".list-item"); if (!li) return;
+    if (action === "toggle-assigned") {
+      const t = findProjectTodo(li.dataset.pid, li.dataset.eid, li.dataset.tid);
+      if (t) { t.done = !t.done; save(); renderMember(); }
+    } else if (action === "toggle") {
+      const t = data.tasks.find(x => x.id === li.dataset.id);
+      if (t) { t.done = !t.done; save(); renderMember(); }
+    } else if (action === "del") {
+      const i = data.tasks.findIndex(x => x.id === li.dataset.id);
+      if (i > -1) { data.tasks.splice(i, 1); save(); renderMember(); }
+    }
   });
 }
 
@@ -667,10 +780,12 @@ function simpleRow(it) {
 // a project event shown (read-only) on a member's calendar; managed in Projects
 function projectEventRow(ev, project) {
   const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
+  const todos = ev.todos || [];
+  const done = todos.filter(t => t.done).length;
   return `<li class="list-item event-item project-event" data-id="${ev.id}">
     <div class="event-main">
       <span class="li-text">${escapeHtml(ev.title)}<small>${meta ? escapeHtml(meta) + " · " : ""}📁 ${escapeHtml(project.name)}</small></span>
-      <span class="tag-proj">Project</span>
+      <span class="tag-proj">Project${todos.length ? ` · ${done}/${todos.length}` : ""}</span>
     </div>
   </li>`;
 }
@@ -709,14 +824,33 @@ function wireEventList(ul, arr, rerender) {
 /* =========================================================
    PROJECTS  (shared: project → to-do lists → assigned tasks)
    ========================================================= */
+/* =========================================================
+   PROJECTS  —  drill-down:
+   Projects list → a project → its events → expand an event
+   to see/assign its to-do list.
+   ========================================================= */
 function renderProjects() {
-  const projectsHtml = state.projects.map(projectCard).join("");
+  const cards = state.projects.map(p => {
+    const evs = (p.events || []).length;
+    const open = (p.events || []).reduce((n, ev) => n + (ev.todos || []).filter(t => !t.done).length, 0);
+    return `
+    <div class="card project-card clickable" data-project="${p.id}">
+      <div class="project-head">
+        <div>
+          <h3>${escapeHtml(p.name)}</h3>
+          ${p.desc ? `<p class="project-desc" style="margin:4px 0 0">${escapeHtml(p.desc)}</p>` : ""}
+        </div>
+        <button class="icon-btn" data-action="del-project" title="Delete project">✕</button>
+      </div>
+      <div class="mini">${evs} event${evs === 1 ? "" : "s"} · ${open} open task${open === 1 ? "" : "s"} · open ›</div>
+    </div>`;
+  }).join("");
 
   app.innerHTML = `
     <div class="view-head">
       <div>
         <h2>Projects</h2>
-        <p>Create a project, add to-do lists, and assign tasks to members.</p>
+        <p>Click a project to open its events, then expand an event to see its to-do list.</p>
       </div>
     </div>
     <div class="card" style="margin-bottom:18px">
@@ -729,7 +863,7 @@ function renderProjects() {
       </form>
     </div>
     ${state.projects.length
-      ? `<div class="grid">${projectsHtml}</div>`
+      ? `<div class="grid cols">${cards}</div>`
       : emptyState("📂", "No projects yet", "Spin up your first project above.")}
   `;
 
@@ -739,178 +873,190 @@ function renderProjects() {
     state.projects.push({
       id: uid(), name,
       desc: document.getElementById("projDesc").value.trim(),
-      lists: []
+      events: []
     });
     save(); renderProjects();
   });
 
-  wireProjects();
+  app.querySelectorAll(".project-card").forEach(card => {
+    const id = card.dataset.project;
+    card.addEventListener("click", e => {
+      if (e.target.closest('[data-action="del-project"]')) return;
+      activeProjectId = id;
+      currentView = "project";
+      render();
+    });
+    card.querySelector('[data-action="del-project"]').addEventListener("click", e => {
+      e.stopPropagation();
+      const p = state.projects.find(x => x.id === id);
+      if (!confirm(`Delete project "${p.name}"?`)) return;
+      state.projects = state.projects.filter(x => x.id !== id);
+      save(); renderProjects();
+    });
+  });
 }
 
-function projectCard(p) {
-  const lists = p.lists.map(l => todoListHtml(p.id, l)).join("");
+/* ----- Project detail (events + expandable to-do lists) ----- */
+function renderProject() {
+  const p = state.projects.find(x => x.id === activeProjectId);
+  if (!p) { currentView = "projects"; return renderProjects(); }
+
   const events = (p.events || [])
     .slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""))
-    .map(eventRow).join("");
-  return `
-    <div class="card" data-project="${p.id}">
-      <div class="project-head">
-        <div><h3>${escapeHtml(p.name)}</h3></div>
-        <button class="icon-btn" data-action="del-project" title="Delete project">✕</button>
-      </div>
-      ${p.desc ? `<p class="project-desc">${escapeHtml(p.desc)}</p>` : ""}
-      ${lists || `<p class="project-desc">No to-do lists yet.</p>`}
-      <form data-action="add-list" class="row" style="margin-top:14px">
-        <input type="text" placeholder="New to-do list (e.g. Logistics)" required />
-        <button class="btn ghost" type="submit">+ List</button>
-      </form>
+    .map(ev => projectEventBlock(p, ev)).join("");
 
-      <div class="section-title" style="margin-top:20px">📅 Events <span class="pill">on everyone's calendar</span></div>
-      <ul class="list proj-event-list">${events ||
-        `<li class="empty" style="padding:16px">No events yet.</li>`}</ul>
-      <form data-action="add-event" style="margin-top:10px">
+  app.innerHTML = `
+    <button class="back-btn" id="backProjects">‹ All projects</button>
+    <div class="view-head">
+      <div>
+        <h2>${escapeHtml(p.name)}</h2>
+        ${p.desc ? `<p>${escapeHtml(p.desc)}</p>` : ""}
+      </div>
+    </div>
+    <div class="section-title">📅 Events <span class="pill">on everyone's calendar</span></div>
+    <div class="events-wrap">${events ||
+      `<div class="empty" style="padding:28px">No events yet — add your first one below.</div>`}</div>
+    <div class="card" style="margin-top:16px">
+      <div class="section-title">➕ New event</div>
+      <form id="projEventForm">
         <div class="row" style="margin-bottom:8px">
           <input type="text" name="title" placeholder="Event name…" required />
         </div>
         <div class="row">
           <input type="date" name="date" />
           <input type="text" name="note" placeholder="Location / note" />
-          <button class="btn ghost" type="submit">+ Event</button>
+          <button class="btn" type="submit">Add event</button>
         </div>
       </form>
     </div>
   `;
+
+  document.getElementById("backProjects").addEventListener("click", () => {
+    currentView = "projects"; render();
+  });
+
+  document.getElementById("projEventForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const title = e.target.querySelector('[name="title"]').value.trim(); if (!title) return;
+    const date = e.target.querySelector('[name="date"]').value;
+    const ev = {
+      id: uid(), title, date,
+      note: e.target.querySelector('[name="note"]').value.trim(),
+      todos: buildEventTodos(date)
+    };
+    p.events.push(ev);
+    expandedEvents.add(ev.id); // open it so they can start assigning right away
+    save(); renderProject();
+  });
+
+  wireProjectEvents(p);
 }
 
-function todoListHtml(projectId, list) {
-  const total = list.tasks.length;
-  const done = list.tasks.filter(t => t.done).length;
-  const pct = total ? Math.round((done / total) * 100) : 0;
-
-  const rows = list.tasks.map(t => {
-    const assignees = Array.isArray(t.assignees) ? t.assignees : [];
-    const tags = assignees.map(aid => {
-      const mm = memberById(aid);
-      if (!mm) return "";
-      return `<span class="assignee-tag">
-        <span class="dot" style="background:${colorFor(mm.id)}">${initials(mm.name)}</span>
-        ${escapeHtml(mm.name)}
-        <button class="tag-x" data-action="unassign" data-aid="${aid}" title="Remove">×</button>
-      </span>`;
-    }).join("");
-    const available = state.members.filter(mm => !assignees.includes(mm.id));
-    let picker;
-    if (available.length) {
-      picker = `<select data-action="assign" title="Assign to">
-        <option value="">${assignees.length ? "+ Add…" : "— Assign —"}</option>
-        ${available.map(mm => `<option value="${mm.id}">${escapeHtml(mm.name)}</option>`).join("")}
-      </select>`;
-    } else if (!assignees.length) {
-      picker = `<span class="assignee-tag" style="color:var(--ink-soft)">Add members to assign</span>`;
-    } else {
-      picker = "";
-    }
-    return `<li class="list-item ${t.done ? "done" : ""}" data-id="${t.id}">
-      <div class="check ${t.done ? "on" : ""}" data-action="toggle-ptask">${t.done ? "✓" : ""}</div>
-      <span class="li-text">${escapeHtml(t.text)}</span>
-      <span class="assignees">${tags}${picker}</span>
-      <button class="icon-btn" data-action="del-ptask">✕</button>
-    </li>`;
-  }).join("");
-
+function projectEventBlock(p, ev) {
+  const expanded = expandedEvents.has(ev.id);
+  const todos = ev.todos || [];
+  const done = todos.filter(t => t.done).length;
+  const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
   return `
-    <div class="todolist" data-list="${list.id}">
-      <div class="todolist-head">
-        <h4>${escapeHtml(list.name)} <span class="pill">${done}/${total}</span></h4>
-        <button class="icon-btn" data-action="del-list" title="Delete list">✕</button>
+    <div class="event-block ${expanded ? "open" : ""}" data-event="${ev.id}">
+      <div class="event-head" data-action="toggle-event">
+        <span class="caret">${expanded ? "▾" : "▸"}</span>
+        <div class="event-title">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</div>
+        <span class="pill">${done}/${todos.length}</span>
+        <button class="icon-btn" data-action="del-event" title="Delete event">✕</button>
       </div>
-      <div class="progress"><span style="width:${pct}%"></span></div>
-      <ul class="list">${rows || `<li class="empty" style="padding:16px">No tasks yet.</li>`}</ul>
-      <form data-action="add-ptask" class="row" style="margin-top:10px">
-        <input type="text" placeholder="Add task…" required />
-        <button class="btn sm" type="submit">Add</button>
-      </form>
-    </div>
-  `;
+      ${expanded ? `
+      <div class="event-body">
+        <ul class="list">${todos.map(t => todoRow(t)).join("") ||
+          `<li class="empty" style="padding:14px">No to-do items yet.</li>`}</ul>
+        <form data-action="add-todo" class="row" style="margin-top:10px">
+          <input type="text" name="label" placeholder="Add a to-do item…" required />
+          <input type="date" name="due" title="Due date (optional)" />
+          <button class="btn sm" type="submit">Add</button>
+        </form>
+      </div>` : ""}
+    </div>`;
 }
 
-function findList(projectId, listId) {
-  const p = state.projects.find(x => x.id === projectId);
-  return [p, p?.lists.find(l => l.id === listId)];
+function todoRow(t) {
+  const assignees = Array.isArray(t.assignees) ? t.assignees : [];
+  const tags = assignees.map(aid => {
+    const mm = memberById(aid);
+    if (!mm) return "";
+    return `<span class="assignee-tag">
+      <span class="dot" style="background:${colorFor(mm.id)}">${initials(mm.name)}</span>
+      ${escapeHtml(mm.name)}
+      <button class="tag-x" data-action="unassign" data-aid="${aid}" title="Remove">×</button>
+    </span>`;
+  }).join("");
+  const available = state.members.filter(mm => !assignees.includes(mm.id));
+  let picker;
+  if (available.length) {
+    picker = `<select data-action="assign" title="Assign to">
+      <option value="">${assignees.length ? "+ Add…" : "— Assign —"}</option>
+      ${available.map(mm => `<option value="${mm.id}">${escapeHtml(mm.name)}</option>`).join("")}
+    </select>`;
+  } else if (!assignees.length) {
+    picker = `<span class="assignee-tag" style="color:var(--ink-soft)">Add members to assign</span>`;
+  } else {
+    picker = "";
+  }
+  return `<li class="list-item todo-row ${t.done ? "done" : ""}" data-tid="${t.id}">
+    <div class="check ${t.done ? "on" : ""}" data-action="toggle-todo">${t.done ? "✓" : ""}</div>
+    <span class="li-text">${escapeHtml(t.label)}${t.due
+      ? `<small>due ${escapeHtml(fmtDate(t.due))}</small>`
+      : `<small class="tbd">TBD</small>`}</span>
+    <span class="assignees">${tags}${picker}</span>
+    <button class="icon-btn" data-action="del-todo">✕</button>
+  </li>`;
 }
 
-function wireProjects() {
-  app.querySelectorAll("[data-project]").forEach(card => {
-    const projectId = card.dataset.project;
-    const project = state.projects.find(p => p.id === projectId);
+function wireProjectEvents(p) {
+  app.querySelectorAll("[data-event]").forEach(block => {
+    const ev = p.events.find(x => x.id === block.dataset.event);
+    if (!ev) return;
 
-    card.querySelector('[data-action="del-project"]').addEventListener("click", () => {
-      if (!confirm(`Delete project "${project.name}"?`)) return;
-      state.projects = state.projects.filter(p => p.id !== projectId);
-      save(); renderProjects();
+    block.querySelector(".event-head").addEventListener("click", e => {
+      if (e.target.closest('[data-action="del-event"]')) return;
+      if (expandedEvents.has(ev.id)) expandedEvents.delete(ev.id);
+      else expandedEvents.add(ev.id);
+      renderProject();
+    });
+    block.querySelector('[data-action="del-event"]').addEventListener("click", e => {
+      e.stopPropagation();
+      if (!confirm(`Delete event "${ev.title}" and its to-do list?`)) return;
+      p.events = p.events.filter(x => x.id !== ev.id);
+      save(); renderProject();
     });
 
-    card.querySelector('form[data-action="add-list"]').addEventListener("submit", e => {
+    const addForm = block.querySelector('form[data-action="add-todo"]');
+    if (addForm) addForm.addEventListener("submit", e => {
       e.preventDefault();
-      const input = e.target.querySelector("input");
-      const name = input.value.trim(); if (!name) return;
-      project.lists.push({ id: uid(), name, tasks: [] });
-      save(); renderProjects();
+      const label = e.target.querySelector('[name="label"]').value.trim(); if (!label) return;
+      const due = e.target.querySelector('[name="due"]').value || null;
+      ev.todos.push({ id: uid(), label, due, done: false, assignees: [] });
+      save(); renderProject();
     });
 
-    // create a project event -> shows on everyone's calendar for its month
-    card.querySelector('form[data-action="add-event"]').addEventListener("submit", e => {
-      e.preventDefault();
-      const title = e.target.querySelector('[name="title"]').value.trim(); if (!title) return;
-      const date = e.target.querySelector('[name="date"]').value;
-      if (!Array.isArray(project.events)) project.events = [];
-      project.events.push({
-        id: uid(), title, date,
-        note: e.target.querySelector('[name="note"]').value.trim(),
-        checklist: buildEventChecklist(date)
+    block.querySelectorAll(".todo-row").forEach(li => {
+      const t = ev.todos.find(x => x.id === li.dataset.tid); if (!t) return;
+      li.querySelector('[data-action="toggle-todo"]').addEventListener("click", () => {
+        t.done = !t.done; save(); renderProject();
       });
-      save(); renderProjects();
-    });
-    wireEventList(card.querySelector(".proj-event-list"), project.events, renderProjects);
-
-    card.querySelectorAll("[data-list]").forEach(listEl => {
-      const listId = listEl.dataset.list;
-      const [, list] = findList(projectId, listId);
-
-      listEl.querySelector('[data-action="del-list"]').addEventListener("click", () => {
-        if (!confirm(`Delete list "${list.name}"?`)) return;
-        project.lists = project.lists.filter(l => l.id !== listId);
-        save(); renderProjects();
+      li.querySelector('[data-action="del-todo"]').addEventListener("click", () => {
+        ev.todos = ev.todos.filter(x => x.id !== t.id); save(); renderProject();
       });
-
-      listEl.querySelector('form[data-action="add-ptask"]').addEventListener("submit", e => {
-        e.preventDefault();
-        const input = e.target.querySelector("input");
-        const text = input.value.trim(); if (!text) return;
-        list.tasks.push({ id: uid(), text, done: false, assignees: [] });
-        save(); renderProjects();
+      li.querySelector('[data-action="assign"]')?.addEventListener("change", e => {
+        const id = e.target.value; if (!id) return;
+        if (!Array.isArray(t.assignees)) t.assignees = [];
+        if (!t.assignees.includes(id)) t.assignees.push(id);
+        save(); renderProject();
       });
-
-      listEl.querySelectorAll(".list-item").forEach(li => {
-        const task = list.tasks.find(t => t.id === li.dataset.id); if (!task) return;
-        li.querySelector('[data-action="toggle-ptask"]')?.addEventListener("click", () => {
-          task.done = !task.done; save(); renderProjects();
-        });
-        li.querySelector('[data-action="del-ptask"]')?.addEventListener("click", () => {
-          list.tasks = list.tasks.filter(t => t.id !== task.id); save(); renderProjects();
-        });
-        li.querySelector('[data-action="assign"]')?.addEventListener("change", e => {
-          const id = e.target.value; if (!id) return;
-          if (!Array.isArray(task.assignees)) task.assignees = [];
-          if (!task.assignees.includes(id)) task.assignees.push(id);
-          save(); renderProjects();
-        });
-        li.querySelectorAll('[data-action="unassign"]').forEach(b =>
-          b.addEventListener("click", () => {
-            task.assignees = (task.assignees || []).filter(a => a !== b.dataset.aid);
-            save(); renderProjects();
-          }));
-      });
+      li.querySelectorAll('[data-action="unassign"]').forEach(b =>
+        b.addEventListener("click", () => {
+          t.assignees = (t.assignees || []).filter(a => a !== b.dataset.aid);
+          save(); renderProject();
+        }));
     });
   });
 }

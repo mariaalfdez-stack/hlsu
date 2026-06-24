@@ -222,6 +222,44 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
 }
 .proj-event-list { margin-top: 4px; }
 
+/* ---------- Combined to-do subheads ---------- */
+.list-subhead {
+  list-style: none; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--ink-soft); padding: 8px 2px 2px;
+}
+.assigned-row { background: #f4f1ff; border-color: var(--brand-soft); }
+
+/* ---------- Project cards (list) ---------- */
+.project-card.clickable { cursor: pointer; transition: transform .08s, box-shadow .15s, border-color .15s; }
+.project-card.clickable:hover { transform: translateY(-2px); border-color: var(--brand); box-shadow: 0 14px 34px rgba(80,50,160,.16); }
+.project-card .mini { font-size: 12px; color: var(--brand-ink); font-weight: 600; margin-top: 10px; }
+
+/* ---------- Project detail: collapsible events ---------- */
+.events-wrap { display: flex; flex-direction: column; gap: 10px; }
+.event-block {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  overflow: hidden;
+}
+.event-block.open { border-color: var(--brand-soft); box-shadow: var(--shadow); }
+.event-head {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px; cursor: pointer;
+  user-select: none;
+}
+.event-head:hover { background: var(--surface-2); }
+.event-head .caret { color: var(--ink-soft); font-size: 12px; width: 12px; }
+.event-title { flex: 1; font-weight: 600; }
+.event-title small { display: block; color: var(--ink-soft); font-size: 12px; font-weight: 400; margin-top: 2px; }
+.event-body { padding: 4px 16px 16px; border-top: 1px dashed var(--line); }
+.todo-row .li-text small { color: var(--ink-soft); font-size: 12px; }
+.todo-row .li-text small.tbd { color: var(--amber); }
+
+/* ---------- Dashboard ---------- */
+.stat { text-align: center; padding: 18px; }
+.stat-num { font-size: 30px; font-weight: 700; color: var(--brand-ink); line-height: 1; }
+.stat-lbl { font-size: 13px; color: var(--ink-soft); margin-top: 6px; font-weight: 600; }
+.list-item.clickable { cursor: pointer; }
+.list-item.clickable:hover { border-color: var(--brand); }
+
 .section-title {
   font-size: 13px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .6px; color: var(--ink-soft); margin: 0 0 12px;

@@ -246,9 +246,13 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
   user-select: none;
 }
 .event-head:hover { background: var(--surface-2); }
-.event-head .caret { color: var(--ink-soft); font-size: 12px; width: 12px; }
+.event-head .caret { color: var(--brand-ink); font-size: 12px; width: 12px; transition: transform .12s; }
 .event-title { flex: 1; font-weight: 600; }
 .event-title small { display: block; color: var(--ink-soft); font-size: 12px; font-weight: 400; margin-top: 2px; }
+.expand-hint {
+  font-size: 12px; font-weight: 600; color: var(--brand-ink);
+  background: var(--brand-soft); padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+}
 .event-body { padding: 4px 16px 16px; border-top: 1px dashed var(--line); }
 .todo-row .li-text small { color: var(--ink-soft); font-size: 12px; }
 .todo-row .li-text small.tbd { color: var(--amber); }

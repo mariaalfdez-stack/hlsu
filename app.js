@@ -959,10 +959,11 @@ function projectEventBlock(p, ev) {
   const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
   return `
     <div class="event-block ${expanded ? "open" : ""}" data-event="${ev.id}">
-      <div class="event-head" data-action="toggle-event">
+      <div class="event-head" data-action="toggle-event" title="Click to expand / collapse">
         <span class="caret">${expanded ? "▾" : "▸"}</span>
         <div class="event-title">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</div>
         <span class="pill">${done}/${todos.length}</span>
+        <span class="expand-hint">${expanded ? "Hide list" : "Show list"}</span>
         <button class="icon-btn" data-action="del-event" title="Delete event">✕</button>
       </div>
       ${expanded ? `

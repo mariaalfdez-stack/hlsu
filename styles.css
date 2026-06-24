@@ -197,6 +197,22 @@ textarea { width: 100%; resize: vertical; min-height: 64px; }
   display: grid; place-items: center; color: white; font-size: 12px;
 }
 .check.on { background: var(--green); border-color: var(--green); }
+.check.sm { width: 16px; height: 16px; font-size: 10px; border-radius: 5px; }
+
+/* ---------- Event auto-checklist ---------- */
+.event-item { flex-direction: column; align-items: stretch; }
+.event-main { display: flex; align-items: center; gap: 10px; }
+.event-main .li-text { flex: 1; }
+.checklist {
+  list-style: none; margin: 10px 0 2px; padding: 12px 0 2px;
+  border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.check-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.check-item.done .ci-label { text-decoration: line-through; color: var(--ink-soft); }
+.ci-label { flex: 1; word-break: break-word; }
+.ci-due { color: var(--ink-soft); font-weight: 600; font-size: 12px; white-space: nowrap; }
+.ci-due.tbd { color: var(--amber); }
 
 .section-title {
   font-size: 13px; font-weight: 700; text-transform: uppercase;

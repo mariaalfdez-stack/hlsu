@@ -16,6 +16,36 @@ const AVATAR_COLORS = [
   "#b54ad6", "#0f9e9e", "#e0673a", "#3a6fe0", "#c0428a"
 ];
 
+/* =========================================================
+   EVENT CHECKLIST RULES  —  EDIT THESE IN ONE PLACE
+   ---------------------------------------------------------
+   When an event with a date is created, each rule below
+   becomes a checklist item with a due date worked out from
+   the event date.
+
+   For each rule:
+     label     – the text shown on the checklist item
+     offset    – how many days before/after the event
+                 (set to null to leave the due date BLANK)
+     unit      – "business" (skips weekends) or "calendar"
+     direction – "before" or "after" the event
+
+   To set a lead time later (e.g. the two blank ones), just
+   change offset from null to a number and pick the unit +
+   direction. Nothing else needs to change.
+   ========================================================= */
+const EVENT_CHECKLIST_RULES = [
+  { label: "Submit contract / speaker request",              offset: 30,   unit: "business", direction: "before" },
+  { label: "Submit room request (Secretary)",                offset: 30,   unit: "calendar", direction: "before" },
+  { label: "Submit purchase request (Treasurer Anthony)",    offset: 15,   unit: "business", direction: "before" },
+  { label: "Submit Event Proposal in Nole HQ",               offset: 14,   unit: "calendar", direction: "before" },
+  { label: "Submit receipts (Treasurer Anthony)",            offset: 10,   unit: "business", direction: "after"  },
+  // Blank for now — fill in offset/unit/direction once the lead time is known:
+  { label: "Submit flyer / graphics request (Graphics Chair)", offset: null, unit: "business", direction: "before" },
+  { label: "Submit video request (Videographer)",             offset: null, unit: "business", direction: "before" },
+];
+
+
 /* ---------- State ---------- */
 let state = load();
 
@@ -41,6 +71,10 @@ function normalize(s) {
     if (!m.personal) m.personal = { ideas: [], goals: [] };
     if (!Array.isArray(m.personal.ideas)) m.personal.ideas = [];
     if (!Array.isArray(m.personal.goals)) m.personal.goals = [];
+    // backfill checklists for events made before this feature existed
+    MONTHS.forEach(mo => m.months[mo].events.forEach(ev => {
+      if (ev.checklist === undefined) ev.checklist = ev.date ? buildEventChecklist(ev.date) : [];
+    }));
   });
 
   // migrate old per-member personal map -> member.personal
@@ -88,7 +122,8 @@ function save() {
   schedulePush();
 }
 
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+// function declaration (hoisted) so normalize() can use it during initial load
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 /* =========================================================
    CLOUD SYNC (Supabase) — optional.
@@ -224,6 +259,57 @@ function fmtDate(d) {
   if (!d) return "";
   const dt = new Date(d + "T00:00:00");
   return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+/* ---------- Event checklist date math ---------- */
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function addCalendarDays(date, days) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+// days > 0 moves forward, < 0 moves backward, counting weekdays only (skips Sat/Sun)
+function addBusinessDays(date, days) {
+  const d = new Date(date);
+  const step = days < 0 ? -1 : 1;
+  let remaining = Math.abs(days);
+  while (remaining > 0) {
+    d.setDate(d.getDate() + step);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) remaining--;
+  }
+  return d;
+}
+function computeDueDate(eventDateStr, rule) {
+  if (rule.offset == null) return null; // blank — lead time not decided yet
+  const base = new Date(eventDateStr + "T00:00:00");
+  const signed = rule.direction === "after" ? rule.offset : -rule.offset;
+  const due = rule.unit === "business"
+    ? addBusinessDays(base, signed)
+    : addCalendarDays(base, signed);
+  return toISODate(due);
+}
+function buildEventChecklist(eventDateStr) {
+  if (!eventDateStr) return [];
+  const items = EVENT_CHECKLIST_RULES.map(rule => ({
+    id: uid(),
+    label: rule.label,
+    due: computeDueDate(eventDateStr, rule),
+    done: false
+  }));
+  // sort by due date (earliest first); blank due dates go to the bottom
+  items.sort((a, b) => {
+    if (!a.due && !b.due) return 0;
+    if (!a.due) return 1;
+    if (!b.due) return -1;
+    return a.due.localeCompare(b.due);
+  });
+  return items;
 }
 
 /* ---------- Router ---------- */
@@ -416,10 +502,11 @@ function wireMemberCalendar(m) {
     e.preventDefault();
     const title = document.getElementById("evTitle").value.trim();
     if (!title) return;
+    const date = document.getElementById("evDate").value;
     data.events.push({
-      id: uid(), title,
-      date: document.getElementById("evDate").value,
-      note: document.getElementById("evNote").value.trim()
+      id: uid(), title, date,
+      note: document.getElementById("evNote").value.trim(),
+      checklist: buildEventChecklist(date)
     });
     save(); renderMember();
   });
@@ -487,9 +574,21 @@ function taskRow(t) {
 }
 function eventRow(ev) {
   const meta = [fmtDate(ev.date), ev.note].filter(Boolean).join(" · ");
-  return `<li class="list-item" data-id="${ev.id}">
-    <span class="li-text">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
-    <button class="icon-btn" data-action="del">✕</button>
+  const checklist = Array.isArray(ev.checklist) ? ev.checklist : [];
+  const done = checklist.filter(c => c.done).length;
+  const items = checklist.map(c => `
+    <li class="check-item ${c.done ? "done" : ""}" data-cid="${c.id}">
+      <div class="check sm ${c.done ? "on" : ""}" data-action="toggle-check">${c.done ? "✓" : ""}</div>
+      <span class="ci-label">${escapeHtml(c.label)}</span>
+      <span class="ci-due ${c.due ? "" : "tbd"}">${c.due ? fmtDate(c.due) : "TBD"}</span>
+    </li>`).join("");
+  return `<li class="list-item event-item" data-id="${ev.id}">
+    <div class="event-main">
+      <span class="li-text">${escapeHtml(ev.title)}${meta ? `<small>${escapeHtml(meta)}</small>` : ""}</span>
+      ${checklist.length ? `<span class="pill">${done}/${checklist.length}</span>` : ""}
+      <button class="icon-btn" data-action="del">✕</button>
+    </div>
+    ${checklist.length ? `<ul class="checklist">${items}</ul>` : ""}
   </li>`;
 }
 function simpleRow(it) {
@@ -514,10 +613,19 @@ function wireTaskList(ul, arr, rerender) {
 function wireEventList(ul, arr, rerender) {
   if (!ul) return;
   ul.addEventListener("click", e => {
-    if (e.target.closest("[data-action]")?.dataset.action !== "del") return;
+    const action = e.target.closest("[data-action]")?.dataset.action;
+    if (action !== "del" && action !== "toggle-check") return;
     const li = e.target.closest(".list-item");
-    const i = arr.findIndex(x => x.id === li.dataset.id);
-    if (i > -1) { arr.splice(i, 1); save(); rerender(); }
+    const ev = arr.find(x => x.id === li.dataset.id); if (!ev) return;
+    if (action === "del") {
+      arr.splice(arr.indexOf(ev), 1);
+    } else {
+      const ci = e.target.closest(".check-item");
+      const item = (ev.checklist || []).find(c => c.id === ci.dataset.cid);
+      if (!item) return;
+      item.done = !item.done;
+    }
+    save(); rerender();
   });
 }
 
